@@ -7,23 +7,26 @@ import type { NodeType } from "../types/node";
 import styles from "../App.module.css";
 
 const FLOATS_PER_VERTEX = 6;
-const BUFFER_USAGE_COPY_DST = 0x0008;
-const BUFFER_USAGE_VERTEX = 0x0020;
-const BUFFER_USAGE_UNIFORM = 0x0040;
-const SHADER_STAGE_VERTEX = 0x1;
-const COLOR_WRITE_ALL = 0xf;
-const EDGE_SEGMENTS = 24;
+const BYTES_PER_FLOAT = 4;
+const STRIDE_BYTES = FLOATS_PER_VERTEX * BYTES_PER_FLOAT;
+const EDGE_SEGMENTS = 28;
+
+const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
+const GPU_BUFFER_USAGE_VERTEX = 0x0020;
+const GPU_BUFFER_USAGE_UNIFORM = 0x0040;
+const GPU_SHADER_STAGE_VERTEX = 0x1;
+const GPU_COLOR_WRITE_ALL = 0xf;
 
 const NODE_COLOR: [number, number, number, number] = [1.0, 0.91, 0.8, 0.96];
 const EDGE_COLOR: [number, number, number, number] = [1.0, 0.48, 0.2, 0.95];
 
-const SHADER_CODE = `
-struct Globals {
+const SHADER = `
+struct Uniforms {
   resolution: vec2f,
   _pad: vec2f,
 }
 
-@group(0) @binding(0) var<uniform> globals: Globals;
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
 
 struct VertexInput {
   @location(0) position: vec2f,
@@ -38,9 +41,8 @@ struct VertexOutput {
 @vertex
 fn vs_main(input: VertexInput) -> VertexOutput {
   var output: VertexOutput;
-  let clipX = (input.position.x / globals.resolution.x) * 2.0 - 1.0;
-  let clipY = 1.0 - (input.position.y / globals.resolution.y) * 2.0;
-
+  let clipX = (input.position.x / uniforms.resolution.x) * 2.0 - 1.0;
+  let clipY = 1.0 - (input.position.y / uniforms.resolution.y) * 2.0;
   output.clipPosition = vec4f(clipX, clipY, 0.0, 1.0);
   output.color = input.color;
   return output;
@@ -52,18 +54,12 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4f {
 }
 `;
 
-type DynamicVertexBuffer = {
-  buffer: GpuBufferLike | null;
-  capacityBytes: number;
-  vertexCount: number;
-};
-
 type GpuBufferLike = {
   destroy?: () => void;
 };
 
 type GpuQueueLike = {
-  submit: (buffers: unknown[]) => void;
+  submit: (commands: unknown[]) => void;
   writeBuffer: (
     buffer: GpuBufferLike,
     bufferOffset: number,
@@ -84,7 +80,7 @@ type GpuRenderPassLike = {
 type GpuCommandEncoderLike = {
   beginRenderPass: (descriptor: {
     colorAttachments: Array<{
-      clearValue: { a: number; b: number; g: number; r: number };
+      clearValue: { r: number; g: number; b: number; a: number };
       loadOp: "clear";
       storeOp: "store";
       view: unknown;
@@ -95,11 +91,11 @@ type GpuCommandEncoderLike = {
 
 type GpuDeviceLike = {
   createBindGroup: (descriptor: {
-    entries: Array<{ binding: number; resource: { buffer: GpuBufferLike } }>;
     layout: unknown;
+    entries: Array<{ binding: number; resource: { buffer: GpuBufferLike } }>;
   }) => unknown;
   createBindGroupLayout: (descriptor: {
-    entries: Array<{ binding: number; buffer: { type: "uniform" }; visibility: number }>;
+    entries: Array<{ binding: number; visibility: number; buffer: { type: "uniform" } }>;
   }) => unknown;
   createBuffer: (descriptor: { size: number; usage: number }) => GpuBufferLike;
   createCommandEncoder: () => GpuCommandEncoderLike;
@@ -111,7 +107,7 @@ type GpuDeviceLike = {
 };
 
 type GpuCanvasContextLike = {
-  configure: (configuration: { alphaMode: "premultiplied"; device: GpuDeviceLike; format: string }) => void;
+  configure: (options: { device: GpuDeviceLike; format: string; alphaMode: "premultiplied" }) => void;
   getCurrentTexture: () => { createView: () => unknown };
 };
 
@@ -119,7 +115,7 @@ type GpuAdapterLike = {
   requestDevice: () => Promise<GpuDeviceLike>;
 };
 
-type NavigatorGpuLike = {
+type GpuNavigatorLike = {
   getPreferredCanvasFormat: () => string;
   requestAdapter: () => Promise<GpuAdapterLike | null>;
 };
@@ -133,73 +129,116 @@ type Runtime = {
   uniformBuffer: GpuBufferLike;
 };
 
+type DynamicVertexBuffer = {
+  buffer: GpuBufferLike | null;
+  capacityBytes: number;
+  vertexCount: number;
+};
+
 type Props = {
   edges: EdgeType[];
   nodes: NodeType[];
   viewport: ViewportType;
 };
 
-const pushVertex = (target: number[], x: number, y: number, color: [number, number, number, number]) => {
-  target.push(x, y, color[0], color[1], color[2], color[3]);
+type SceneSnapshot = {
+  edges: EdgeType[];
+  nodes: NodeType[];
+  viewport: ViewportType;
 };
 
-const uploadVertices = (device: GpuDeviceLike, target: DynamicVertexBuffer, values: number[]) => {
-  target.vertexCount = values.length / FLOATS_PER_VERTEX;
-  if (values.length === 0) return;
+const appendVertex = (vertices: number[], x: number, y: number, color: [number, number, number, number]) => {
+  vertices.push(x, y, color[0], color[1], color[2], color[3]);
+};
 
-  const data = new Float32Array(values);
-  const requiredBytes = data.byteLength;
+const ensureVertexBuffer = (device: GpuDeviceLike, state: DynamicVertexBuffer, requiredBytes: number) => {
+  if (state.buffer && state.capacityBytes >= requiredBytes) return;
 
-  if (!target.buffer || target.capacityBytes < requiredBytes) {
-    target.buffer?.destroy?.();
-    target.capacityBytes = Math.max(requiredBytes, Math.max(4096, target.capacityBytes * 2));
-    target.buffer = device.createBuffer({
-      size: target.capacityBytes,
-      usage: BUFFER_USAGE_VERTEX | BUFFER_USAGE_COPY_DST,
-    });
-  }
+  state.buffer?.destroy?.();
+  state.capacityBytes = Math.max(4096, Math.max(requiredBytes, state.capacityBytes * 2));
+  state.buffer = device.createBuffer({
+    size: state.capacityBytes,
+    usage: GPU_BUFFER_USAGE_VERTEX | GPU_BUFFER_USAGE_COPY_DST,
+  });
+};
 
-  device.queue.writeBuffer(target.buffer, 0, data.buffer, data.byteOffset, data.byteLength);
+const uploadVertices = (device: GpuDeviceLike, state: DynamicVertexBuffer, data: number[]) => {
+  state.vertexCount = data.length / FLOATS_PER_VERTEX;
+  if (data.length === 0) return;
+
+  const floatData = new Float32Array(data);
+  ensureVertexBuffer(device, state, floatData.byteLength);
+  if (!state.buffer) return;
+
+  device.queue.writeBuffer(state.buffer, 0, floatData, 0, floatData.length);
+};
+
+const resolveGpuNavigator = (): GpuNavigatorLike | null => {
+  const nav = navigator as Navigator & { gpu?: unknown };
+  const gpu = nav.gpu as GpuNavigatorLike | undefined;
+  return gpu ?? null;
 };
 
 export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
-  const browserHasWebGpu = typeof navigator !== "undefined" && "gpu" in navigator;
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const runtimeRef = useRef<Runtime | null>(null);
   const dprRef = useRef(1);
-  const sceneRef = useRef({ edges, nodes, viewport });
-  const lineBufferRef = useRef<DynamicVertexBuffer>({ buffer: null, capacityBytes: 0, vertexCount: 0 });
-  const triangleBufferRef = useRef<DynamicVertexBuffer>({ buffer: null, capacityBytes: 0, vertexCount: 0 });
+  const sceneRef = useRef<SceneSnapshot>({ edges, nodes, viewport });
+  const edgeBufferRef = useRef<DynamicVertexBuffer>({ buffer: null, capacityBytes: 0, vertexCount: 0 });
+  const nodeBufferRef = useRef<DynamicVertexBuffer>({ buffer: null, capacityBytes: 0, vertexCount: 0 });
   const [runtimeError, setRuntimeError] = useState<string | null>(null);
 
-  const render = useCallback(() => {
+  const syncCanvasSize = useCallback(() => {
+    const runtime = runtimeRef.current;
+    const canvas = canvasRef.current;
+    if (!runtime || !canvas) return;
+
+    const host = canvas.parentElement ?? canvas;
+    const rect = host.getBoundingClientRect();
+    const dpr = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.floor(rect.width * dpr));
+    const height = Math.max(1, Math.floor(rect.height * dpr));
+
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+
+    dprRef.current = dpr;
+    runtime.device.queue.writeBuffer(runtime.uniformBuffer, 0, new Float32Array([width, height, 0, 0]), 0, 4);
+  }, []);
+
+  const draw = useCallback(() => {
     const runtime = runtimeRef.current;
     const canvas = canvasRef.current;
     if (!runtime || !canvas || canvas.width === 0 || canvas.height === 0) return;
 
+    const dpr = dprRef.current;
     const { edges: sceneEdges, nodes: sceneNodes, viewport: sceneViewport } = sceneRef.current;
     const nodeMap = createNodeMap(sceneNodes);
-    const dpr = dprRef.current;
 
-    const lineVertices: number[] = [];
-    const triangleVertices: number[] = [];
+    const edgeVertices: number[] = [];
+    const nodeVertices: number[] = [];
 
     sceneEdges.forEach((edge) => {
-      const source = nodeMap.get(edge.source);
-      const target = nodeMap.get(edge.target);
-      if (!source || !target) return;
+      const sourceNode = nodeMap.get(edge.source);
+      const targetNode = nodeMap.get(edge.target);
+      if (!sourceNode || !targetNode) return;
 
-      const curve = getEdgeCurve(source, target);
-      let prev = cubicBezierPoint(0, curve);
+      const curve = getEdgeCurve(sourceNode, targetNode);
+      let previous = cubicBezierPoint(0, curve);
 
       for (let i = 1; i <= EDGE_SEGMENTS; i += 1) {
         const t = i / EDGE_SEGMENTS;
         const next = cubicBezierPoint(t, curve);
-        const p0 = worldPointToBoard(prev, sceneViewport);
+
+        const p0 = worldPointToBoard(previous, sceneViewport);
         const p1 = worldPointToBoard(next, sceneViewport);
-        pushVertex(lineVertices, p0.x * dpr, p0.y * dpr, EDGE_COLOR);
-        pushVertex(lineVertices, p1.x * dpr, p1.y * dpr, EDGE_COLOR);
-        prev = next;
+
+        appendVertex(edgeVertices, p0.x * dpr, p0.y * dpr, EDGE_COLOR);
+        appendVertex(edgeVertices, p1.x * dpr, p1.y * dpr, EDGE_COLOR);
+
+        previous = next;
       }
     });
 
@@ -210,42 +249,42 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
       const width = node.width * sceneViewport.zoom * dpr;
       const height = node.height * sceneViewport.zoom * dpr;
 
-      pushVertex(triangleVertices, x, y, NODE_COLOR);
-      pushVertex(triangleVertices, x + width, y, NODE_COLOR);
-      pushVertex(triangleVertices, x, y + height, NODE_COLOR);
+      appendVertex(nodeVertices, x, y, NODE_COLOR);
+      appendVertex(nodeVertices, x + width, y, NODE_COLOR);
+      appendVertex(nodeVertices, x, y + height, NODE_COLOR);
 
-      pushVertex(triangleVertices, x + width, y, NODE_COLOR);
-      pushVertex(triangleVertices, x + width, y + height, NODE_COLOR);
-      pushVertex(triangleVertices, x, y + height, NODE_COLOR);
+      appendVertex(nodeVertices, x + width, y, NODE_COLOR);
+      appendVertex(nodeVertices, x + width, y + height, NODE_COLOR);
+      appendVertex(nodeVertices, x, y + height, NODE_COLOR);
     });
 
-    uploadVertices(runtime.device, lineBufferRef.current, lineVertices);
-    uploadVertices(runtime.device, triangleBufferRef.current, triangleVertices);
+    uploadVertices(runtime.device, edgeBufferRef.current, edgeVertices);
+    uploadVertices(runtime.device, nodeBufferRef.current, nodeVertices);
 
     const encoder = runtime.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [
         {
           view: runtime.context.getCurrentTexture().createView(),
+          clearValue: { r: 0, g: 0, b: 0, a: 0 },
           loadOp: "clear",
           storeOp: "store",
-          clearValue: { r: 0, g: 0, b: 0, a: 0 },
         },
       ],
     });
 
     pass.setBindGroup(0, runtime.bindGroup);
 
-    if (triangleBufferRef.current.vertexCount > 0 && triangleBufferRef.current.buffer) {
+    if (nodeBufferRef.current.vertexCount > 0 && nodeBufferRef.current.buffer) {
       pass.setPipeline(runtime.trianglePipeline);
-      pass.setVertexBuffer(0, triangleBufferRef.current.buffer);
-      pass.draw(triangleBufferRef.current.vertexCount);
+      pass.setVertexBuffer(0, nodeBufferRef.current.buffer);
+      pass.draw(nodeBufferRef.current.vertexCount);
     }
 
-    if (lineBufferRef.current.vertexCount > 0 && lineBufferRef.current.buffer) {
+    if (edgeBufferRef.current.vertexCount > 0 && edgeBufferRef.current.buffer) {
       pass.setPipeline(runtime.linePipeline);
-      pass.setVertexBuffer(0, lineBufferRef.current.buffer);
-      pass.draw(lineBufferRef.current.vertexCount);
+      pass.setVertexBuffer(0, edgeBufferRef.current.buffer);
+      pass.draw(edgeBufferRef.current.vertexCount);
     }
 
     pass.end();
@@ -254,23 +293,19 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
 
   useEffect(() => {
     sceneRef.current = { edges, nodes, viewport };
-    render();
-  }, [edges, nodes, render, viewport]);
+    draw();
+  }, [draw, edges, nodes, viewport]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const nav = navigator as Navigator & { gpu?: unknown };
-    const gpu = nav.gpu as NavigatorGpuLike | undefined;
-
-    if (!gpu) {
-      return;
-    }
+    const gpu = resolveGpuNavigator();
+    if (!gpu) return;
 
     let disposed = false;
 
-    const init = async () => {
+    const initialize = async () => {
       try {
         const adapter = await gpu.requestAdapter();
         if (!adapter) {
@@ -283,7 +318,7 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
 
         const context = canvas.getContext("webgpu") as GpuCanvasContextLike | null;
         if (!context) {
-          if (!disposed) setRuntimeError("Failed to acquire WebGPU canvas context.");
+          if (!disposed) setRuntimeError("Failed to acquire WebGPU context.");
           return;
         }
 
@@ -294,12 +329,13 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
           alphaMode: "premultiplied",
         });
 
-        const shader = device.createShaderModule({ code: SHADER_CODE });
+        const shaderModule = device.createShaderModule({ code: SHADER });
+
         const bindGroupLayout = device.createBindGroupLayout({
           entries: [
             {
               binding: 0,
-              visibility: SHADER_STAGE_VERTEX,
+              visibility: GPU_SHADER_STAGE_VERTEX,
               buffer: { type: "uniform" },
             },
           ],
@@ -309,58 +345,48 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
           bindGroupLayouts: [bindGroupLayout],
         });
 
-        const vertex = {
-          module: shader,
+        const vertexState = {
+          module: shaderModule,
           entryPoint: "vs_main",
           buffers: [
             {
-              arrayStride: FLOATS_PER_VERTEX * 4,
+              arrayStride: STRIDE_BYTES,
               attributes: [
-                { shaderLocation: 0, format: "float32x2", offset: 0 },
-                { shaderLocation: 1, format: "float32x4", offset: 8 },
+                { shaderLocation: 0, offset: 0, format: "float32x2" },
+                { shaderLocation: 1, offset: 2 * BYTES_PER_FLOAT, format: "float32x4" },
               ],
             },
           ],
         };
 
-        const fragment = {
-          module: shader,
+        const fragmentState = {
+          module: shaderModule,
           entryPoint: "fs_main",
-          targets: [{ format, writeMask: COLOR_WRITE_ALL }],
+          targets: [{ format, writeMask: GPU_COLOR_WRITE_ALL }],
         };
 
         const trianglePipeline = device.createRenderPipeline({
           layout: pipelineLayout,
-          vertex,
-          fragment,
-          primitive: {
-            topology: "triangle-list",
-            cullMode: "none",
-          },
+          vertex: vertexState,
+          fragment: fragmentState,
+          primitive: { topology: "triangle-list", cullMode: "none" },
         });
 
         const linePipeline = device.createRenderPipeline({
           layout: pipelineLayout,
-          vertex,
-          fragment,
-          primitive: {
-            topology: "line-list",
-          },
+          vertex: vertexState,
+          fragment: fragmentState,
+          primitive: { topology: "line-list" },
         });
 
         const uniformBuffer = device.createBuffer({
           size: 16,
-          usage: BUFFER_USAGE_UNIFORM | BUFFER_USAGE_COPY_DST,
+          usage: GPU_BUFFER_USAGE_UNIFORM | GPU_BUFFER_USAGE_COPY_DST,
         });
 
         const bindGroup = device.createBindGroup({
           layout: bindGroupLayout,
-          entries: [
-            {
-              binding: 0,
-              resource: { buffer: uniformBuffer },
-            },
-          ],
+          entries: [{ binding: 0, resource: { buffer: uniformBuffer } }],
         });
 
         runtimeRef.current = {
@@ -372,61 +398,55 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
           uniformBuffer,
         };
 
-        if (!disposed) setRuntimeError(null);
+        if (!disposed) {
+          setRuntimeError(null);
+          syncCanvasSize();
+          draw();
+        }
       } catch {
-        if (!disposed) setRuntimeError("Failed to initialize WebGPU device.");
+        if (!disposed) {
+          setRuntimeError("Failed to initialize WebGPU device.");
+        }
       }
     };
 
-    void init();
+    void initialize();
 
     return () => {
       disposed = true;
-      lineBufferRef.current.buffer?.destroy?.();
-      triangleBufferRef.current.buffer?.destroy?.();
+
+      edgeBufferRef.current.buffer?.destroy?.();
+      nodeBufferRef.current.buffer?.destroy?.();
       runtimeRef.current?.uniformBuffer?.destroy?.();
       runtimeRef.current?.device?.destroy?.();
+
+      edgeBufferRef.current = { buffer: null, capacityBytes: 0, vertexCount: 0 };
+      nodeBufferRef.current = { buffer: null, capacityBytes: 0, vertexCount: 0 };
       runtimeRef.current = null;
-      lineBufferRef.current = { buffer: null, capacityBytes: 0, vertexCount: 0 };
-      triangleBufferRef.current = { buffer: null, capacityBytes: 0, vertexCount: 0 };
     };
-  }, []);
+  }, [draw, syncCanvasSize]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
 
-    const resize = () => {
-      const runtime = runtimeRef.current;
-      const host = canvas.parentElement;
-      if (!runtime || !host) return;
-
-      const rect = host.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const nextWidth = Math.max(1, Math.floor(rect.width * dpr));
-      const nextHeight = Math.max(1, Math.floor(rect.height * dpr));
-
-      if (canvas.width !== nextWidth || canvas.height !== nextHeight) {
-        canvas.width = nextWidth;
-        canvas.height = nextHeight;
-      }
-
-      dprRef.current = dpr;
-      runtime.device.queue.writeBuffer(runtime.uniformBuffer, 0, new Float32Array([nextWidth, nextHeight, 0, 0]));
-      render();
+    const handleResize = () => {
+      syncCanvasSize();
+      draw();
     };
 
-    const observer = new ResizeObserver(resize);
+    const observer = new ResizeObserver(handleResize);
     observer.observe(canvas.parentElement ?? canvas);
-    window.addEventListener("resize", resize);
-    resize();
+    window.addEventListener("resize", handleResize);
+    handleResize();
 
     return () => {
       observer.disconnect();
-      window.removeEventListener("resize", resize);
+      window.removeEventListener("resize", handleResize);
     };
-  }, [render]);
+  }, [draw, syncCanvasSize]);
 
+  const browserHasWebGpu = typeof navigator !== "undefined" && "gpu" in navigator;
   const statusText = !browserHasWebGpu ? "WebGPU is unavailable in this browser." : runtimeError;
 
   return (

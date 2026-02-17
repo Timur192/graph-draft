@@ -6,10 +6,17 @@ import type { EdgeType } from "../types/edge";
 import type { NodeType } from "../types/node";
 import styles from "../App.module.css";
 
-const FLOATS_PER_VERTEX = 6;
 const BYTES_PER_FLOAT = 4;
-const STRIDE_BYTES = FLOATS_PER_VERTEX * BYTES_PER_FLOAT;
+const EDGE_FLOATS_PER_VERTEX = 5;
+const EDGE_STRIDE_BYTES = EDGE_FLOATS_PER_VERTEX * BYTES_PER_FLOAT;
+const NODE_FLOATS_PER_VERTEX = 8;
+const NODE_STRIDE_BYTES = NODE_FLOATS_PER_VERTEX * BYTES_PER_FLOAT;
 const EDGE_SEGMENTS = 28;
+const EDGE_WIDTH = 2.4;
+const EDGE_GLOW = 6.5;
+const NODE_RADIUS = 12;
+const NODE_BORDER_WIDTH = 1;
+const NODE_SHADOW_PAD = 18;
 
 const GPU_BUFFER_USAGE_COPY_DST = 0x0008;
 const GPU_BUFFER_USAGE_VERTEX = 0x0020;
@@ -17,10 +24,7 @@ const GPU_BUFFER_USAGE_UNIFORM = 0x0040;
 const GPU_SHADER_STAGE_VERTEX = 0x1;
 const GPU_COLOR_WRITE_ALL = 0xf;
 
-const NODE_COLOR: [number, number, number, number] = [0.14, 0.21, 0.31, 0.94];
-const EDGE_COLOR: [number, number, number, number] = [0.33, 0.89, 0.84, 0.95];
-
-const SHADER = `
+const EDGE_SHADER = `
 struct Uniforms {
   resolution: vec2f,
   _pad: vec2f,
@@ -30,12 +34,16 @@ struct Uniforms {
 
 struct VertexInput {
   @location(0) position: vec2f,
-  @location(1) color: vec4f,
+  @location(1) signedDistance: f32,
+  @location(2) coreHalfWidth: f32,
+  @location(3) glowSize: f32,
 }
 
 struct VertexOutput {
   @builtin(position) clipPosition: vec4f,
-  @location(0) color: vec4f,
+  @location(0) signedDistance: f32,
+  @location(1) coreHalfWidth: f32,
+  @location(2) glowSize: f32,
 }
 
 @vertex
@@ -44,13 +52,99 @@ fn vs_main(input: VertexInput) -> VertexOutput {
   let clipX = (input.position.x / uniforms.resolution.x) * 2.0 - 1.0;
   let clipY = 1.0 - (input.position.y / uniforms.resolution.y) * 2.0;
   output.clipPosition = vec4f(clipX, clipY, 0.0, 1.0);
-  output.color = input.color;
+  output.signedDistance = input.signedDistance;
+  output.coreHalfWidth = input.coreHalfWidth;
+  output.glowSize = input.glowSize;
   return output;
 }
 
 @fragment
 fn fs_main(input: VertexOutput) -> @location(0) vec4f {
-  return input.color;
+  let absDistance = abs(input.signedDistance);
+  let aa = max(fwidth(absDistance), 0.75);
+  let core = 1.0 - smoothstep(input.coreHalfWidth - aa, input.coreHalfWidth + aa, absDistance);
+  let glow = 1.0 - smoothstep(input.coreHalfWidth, input.coreHalfWidth + input.glowSize, absDistance);
+  let glowCurve = pow(glow, 1.5);
+
+  let coreColor = vec3f(0.329, 0.89, 0.84);
+  let glowColor = vec3f(0.46, 0.93, 0.9);
+
+  let alpha = max(core * 0.95, glowCurve * 0.36);
+  let color = coreColor * (core * 0.92) + glowColor * (glowCurve * 0.42);
+
+  return vec4f(color, alpha);
+}
+`;
+
+const NODE_SHADER = `
+struct Uniforms {
+  resolution: vec2f,
+  _pad: vec2f,
+}
+
+@group(0) @binding(0) var<uniform> uniforms: Uniforms;
+
+fn sdRoundedRect(point: vec2f, halfSize: vec2f, radius: f32) -> f32 {
+  let q = abs(point) - (halfSize - vec2f(radius, radius));
+  return length(max(q, vec2f(0.0, 0.0))) + min(max(q.x, q.y), 0.0) - radius;
+}
+
+struct VertexInput {
+  @location(0) position: vec2f,
+  @location(1) localPoint: vec2f,
+  @location(2) halfSize: vec2f,
+  @location(3) radius: f32,
+  @location(4) borderWidth: f32,
+}
+
+struct VertexOutput {
+  @builtin(position) clipPosition: vec4f,
+  @location(0) localPoint: vec2f,
+  @location(1) halfSize: vec2f,
+  @location(2) radius: f32,
+  @location(3) borderWidth: f32,
+}
+
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+  var output: VertexOutput;
+  let clipX = (input.position.x / uniforms.resolution.x) * 2.0 - 1.0;
+  let clipY = 1.0 - (input.position.y / uniforms.resolution.y) * 2.0;
+  output.clipPosition = vec4f(clipX, clipY, 0.0, 1.0);
+  output.localPoint = input.localPoint;
+  output.halfSize = input.halfSize;
+  output.radius = input.radius;
+  output.borderWidth = input.borderWidth;
+  return output;
+}
+
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4f {
+  let distance = sdRoundedRect(input.localPoint, input.halfSize, input.radius);
+  let aa = max(fwidth(distance), 0.8);
+  let fill = 1.0 - smoothstep(-aa, aa, distance);
+  let inner = 1.0 - smoothstep(-aa, aa, distance + input.borderWidth);
+  let border = clamp(fill - inner, 0.0, 1.0);
+
+  let yScale = input.localPoint.y / max(input.halfSize.y, 1.0);
+  let gradientT = clamp(yScale * 0.5 + 0.5, 0.0, 1.0);
+
+  let topColor = vec3f(0.141, 0.208, 0.31);
+  let bottomColor = vec3f(0.082, 0.129, 0.196);
+  var base = mix(topColor, bottomColor, gradientT);
+
+  let sheen = clamp((1.0 - gradientT) * 1.15, 0.0, 1.0) * inner * 0.14;
+  base += vec3f(0.13, 0.17, 0.21) * sheen;
+
+  let borderColor = vec3f(0.59, 0.7, 0.88);
+  let shadowDistance = max(distance, 0.0);
+  let shadow = exp(-shadowDistance / max(input.radius * 0.95, 1.0)) * (1.0 - fill) * 0.34;
+  let shadowColor = vec3f(0.01, 0.03, 0.07);
+
+  let color = shadowColor * shadow + base * inner + borderColor * (border * 0.46);
+  let alpha = clamp(shadow + fill, 0.0, 1.0);
+
+  return vec4f(color, alpha);
 }
 `;
 
@@ -124,8 +218,8 @@ type Runtime = {
   bindGroup: unknown;
   context: GpuCanvasContextLike;
   device: GpuDeviceLike;
-  linePipeline: unknown;
-  trianglePipeline: unknown;
+  edgePipeline: unknown;
+  nodePipeline: unknown;
   uniformBuffer: GpuBufferLike;
 };
 
@@ -147,8 +241,98 @@ type SceneSnapshot = {
   viewport: ViewportType;
 };
 
-const appendVertex = (vertices: number[], x: number, y: number, color: [number, number, number, number]) => {
-  vertices.push(x, y, color[0], color[1], color[2], color[3]);
+type Point = {
+  x: number;
+  y: number;
+};
+
+const appendEdgeVertex = (
+  vertices: number[],
+  x: number,
+  y: number,
+  signedDistance: number,
+  coreHalfWidth: number,
+  glowSize: number,
+) => {
+  vertices.push(x, y, signedDistance, coreHalfWidth, glowSize);
+};
+
+const appendEdgeQuadSegment = (
+  vertices: number[],
+  start: Point,
+  end: Point,
+  coreHalfWidth: number,
+  glowSize: number,
+) => {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const length = Math.hypot(dx, dy);
+  if (length < 0.001) return;
+
+  const nx = -dy / length;
+  const ny = dx / length;
+  const outerHalf = coreHalfWidth + glowSize;
+
+  const ox = nx * outerHalf;
+  const oy = ny * outerHalf;
+
+  const left0 = { x: start.x - ox, y: start.y - oy };
+  const right0 = { x: start.x + ox, y: start.y + oy };
+  const left1 = { x: end.x - ox, y: end.y - oy };
+  const right1 = { x: end.x + ox, y: end.y + oy };
+
+  appendEdgeVertex(vertices, left0.x, left0.y, -outerHalf, coreHalfWidth, glowSize);
+  appendEdgeVertex(vertices, right0.x, right0.y, outerHalf, coreHalfWidth, glowSize);
+  appendEdgeVertex(vertices, left1.x, left1.y, -outerHalf, coreHalfWidth, glowSize);
+
+  appendEdgeVertex(vertices, right0.x, right0.y, outerHalf, coreHalfWidth, glowSize);
+  appendEdgeVertex(vertices, right1.x, right1.y, outerHalf, coreHalfWidth, glowSize);
+  appendEdgeVertex(vertices, left1.x, left1.y, -outerHalf, coreHalfWidth, glowSize);
+};
+
+const appendNodeVertex = (
+  vertices: number[],
+  x: number,
+  y: number,
+  localX: number,
+  localY: number,
+  halfWidth: number,
+  halfHeight: number,
+  radius: number,
+  borderWidth: number,
+) => {
+  vertices.push(x, y, localX, localY, halfWidth, halfHeight, radius, borderWidth);
+};
+
+const appendNodeQuad = (
+  vertices: number[],
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+  shadowPadding: number,
+  radius: number,
+  borderWidth: number,
+) => {
+  const left = x - shadowPadding;
+  const top = y - shadowPadding;
+  const right = x + width + shadowPadding;
+  const bottom = y + height + shadowPadding;
+
+  const halfWidth = width / 2;
+  const halfHeight = height / 2;
+  const localLeft = -halfWidth - shadowPadding;
+  const localTop = -halfHeight - shadowPadding;
+  const localRight = halfWidth + shadowPadding;
+  const localBottom = halfHeight + shadowPadding;
+
+  appendNodeVertex(vertices, left, top, localLeft, localTop, halfWidth, halfHeight, radius, borderWidth);
+  appendNodeVertex(vertices, right, top, localRight, localTop, halfWidth, halfHeight, radius, borderWidth);
+  appendNodeVertex(vertices, left, bottom, localLeft, localBottom, halfWidth, halfHeight, radius, borderWidth);
+
+  appendNodeVertex(vertices, right, top, localRight, localTop, halfWidth, halfHeight, radius, borderWidth);
+  appendNodeVertex(vertices, right, bottom, localRight, localBottom, halfWidth, halfHeight, radius, borderWidth);
+  appendNodeVertex(vertices, left, bottom, localLeft, localBottom, halfWidth, halfHeight, radius, borderWidth);
 };
 
 const ensureVertexBuffer = (device: GpuDeviceLike, state: DynamicVertexBuffer, requiredBytes: number) => {
@@ -162,8 +346,8 @@ const ensureVertexBuffer = (device: GpuDeviceLike, state: DynamicVertexBuffer, r
   });
 };
 
-const uploadVertices = (device: GpuDeviceLike, state: DynamicVertexBuffer, data: number[]) => {
-  state.vertexCount = data.length / FLOATS_PER_VERTEX;
+const uploadVertices = (device: GpuDeviceLike, state: DynamicVertexBuffer, data: number[], floatsPerVertex: number) => {
+  state.vertexCount = data.length / floatsPerVertex;
   if (data.length === 0) return;
 
   const floatData = new Float32Array(data);
@@ -219,6 +403,14 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
 
     const edgeVertices: number[] = [];
     const nodeVertices: number[] = [];
+    const edgeScale = sceneViewport.zoom * dpr;
+    const edgeCoreHalf = (EDGE_WIDTH * edgeScale) / 2;
+    const edgeGlow = Math.max(1.1 * dpr, EDGE_GLOW * edgeScale);
+
+    const nodeScale = sceneViewport.zoom * dpr;
+    const nodeRadiusBase = Math.max(2 * dpr, NODE_RADIUS * nodeScale);
+    const nodeBorder = Math.max(0.9 * dpr, NODE_BORDER_WIDTH * nodeScale);
+    const nodeShadowPad = Math.max(7 * dpr, NODE_SHADOW_PAD * nodeScale);
 
     sceneEdges.forEach((edge) => {
       const sourceNode = nodeMap.get(edge.source);
@@ -235,8 +427,13 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
         const p0 = worldPointToBoard(previous, sceneViewport);
         const p1 = worldPointToBoard(next, sceneViewport);
 
-        appendVertex(edgeVertices, p0.x * dpr, p0.y * dpr, EDGE_COLOR);
-        appendVertex(edgeVertices, p1.x * dpr, p1.y * dpr, EDGE_COLOR);
+        appendEdgeQuadSegment(
+          edgeVertices,
+          { x: p0.x * dpr, y: p0.y * dpr },
+          { x: p1.x * dpr, y: p1.y * dpr },
+          edgeCoreHalf,
+          edgeGlow,
+        );
 
         previous = next;
       }
@@ -248,18 +445,13 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
       const y = topLeft.y * dpr;
       const width = node.width * sceneViewport.zoom * dpr;
       const height = node.height * sceneViewport.zoom * dpr;
+      const radius = Math.min(nodeRadiusBase, Math.max(1, Math.min(width, height) * 0.5 - 1));
 
-      appendVertex(nodeVertices, x, y, NODE_COLOR);
-      appendVertex(nodeVertices, x + width, y, NODE_COLOR);
-      appendVertex(nodeVertices, x, y + height, NODE_COLOR);
-
-      appendVertex(nodeVertices, x + width, y, NODE_COLOR);
-      appendVertex(nodeVertices, x + width, y + height, NODE_COLOR);
-      appendVertex(nodeVertices, x, y + height, NODE_COLOR);
+      appendNodeQuad(nodeVertices, x, y, width, height, nodeShadowPad, radius, nodeBorder);
     });
 
-    uploadVertices(runtime.device, edgeBufferRef.current, edgeVertices);
-    uploadVertices(runtime.device, nodeBufferRef.current, nodeVertices);
+    uploadVertices(runtime.device, edgeBufferRef.current, edgeVertices, EDGE_FLOATS_PER_VERTEX);
+    uploadVertices(runtime.device, nodeBufferRef.current, nodeVertices, NODE_FLOATS_PER_VERTEX);
 
     const encoder = runtime.device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
@@ -275,16 +467,16 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
 
     pass.setBindGroup(0, runtime.bindGroup);
 
-    if (nodeBufferRef.current.vertexCount > 0 && nodeBufferRef.current.buffer) {
-      pass.setPipeline(runtime.trianglePipeline);
-      pass.setVertexBuffer(0, nodeBufferRef.current.buffer);
-      pass.draw(nodeBufferRef.current.vertexCount);
-    }
-
     if (edgeBufferRef.current.vertexCount > 0 && edgeBufferRef.current.buffer) {
-      pass.setPipeline(runtime.linePipeline);
+      pass.setPipeline(runtime.edgePipeline);
       pass.setVertexBuffer(0, edgeBufferRef.current.buffer);
       pass.draw(edgeBufferRef.current.vertexCount);
+    }
+
+    if (nodeBufferRef.current.vertexCount > 0 && nodeBufferRef.current.buffer) {
+      pass.setPipeline(runtime.nodePipeline);
+      pass.setVertexBuffer(0, nodeBufferRef.current.buffer);
+      pass.draw(nodeBufferRef.current.vertexCount);
     }
 
     pass.end();
@@ -329,7 +521,8 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
           alphaMode: "premultiplied",
         });
 
-        const shaderModule = device.createShaderModule({ code: SHADER });
+        const edgeShaderModule = device.createShaderModule({ code: EDGE_SHADER });
+        const nodeShaderModule = device.createShaderModule({ code: NODE_SHADER });
 
         const bindGroupLayout = device.createBindGroupLayout({
           entries: [
@@ -345,38 +538,68 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
           bindGroupLayouts: [bindGroupLayout],
         });
 
-        const vertexState = {
-          module: shaderModule,
-          entryPoint: "vs_main",
-          buffers: [
-            {
-              arrayStride: STRIDE_BYTES,
-              attributes: [
-                { shaderLocation: 0, offset: 0, format: "float32x2" },
-                { shaderLocation: 1, offset: 2 * BYTES_PER_FLOAT, format: "float32x4" },
-              ],
-            },
-          ],
+        const blendState = {
+          color: {
+            operation: "add",
+            srcFactor: "src-alpha",
+            dstFactor: "one-minus-src-alpha",
+          },
+          alpha: {
+            operation: "add",
+            srcFactor: "one",
+            dstFactor: "one-minus-src-alpha",
+          },
         };
 
-        const fragmentState = {
-          module: shaderModule,
-          entryPoint: "fs_main",
-          targets: [{ format, writeMask: GPU_COLOR_WRITE_ALL }],
-        };
-
-        const trianglePipeline = device.createRenderPipeline({
+        const edgePipeline = device.createRenderPipeline({
           layout: pipelineLayout,
-          vertex: vertexState,
-          fragment: fragmentState,
+          vertex: {
+            module: edgeShaderModule,
+            entryPoint: "vs_main",
+            buffers: [
+              {
+                arrayStride: EDGE_STRIDE_BYTES,
+                attributes: [
+                  { shaderLocation: 0, offset: 0, format: "float32x2" },
+                  { shaderLocation: 1, offset: 2 * BYTES_PER_FLOAT, format: "float32" },
+                  { shaderLocation: 2, offset: 3 * BYTES_PER_FLOAT, format: "float32" },
+                  { shaderLocation: 3, offset: 4 * BYTES_PER_FLOAT, format: "float32" },
+                ],
+              },
+            ],
+          },
+          fragment: {
+            module: edgeShaderModule,
+            entryPoint: "fs_main",
+            targets: [{ format, writeMask: GPU_COLOR_WRITE_ALL, blend: blendState }],
+          },
           primitive: { topology: "triangle-list", cullMode: "none" },
         });
 
-        const linePipeline = device.createRenderPipeline({
+        const nodePipeline = device.createRenderPipeline({
           layout: pipelineLayout,
-          vertex: vertexState,
-          fragment: fragmentState,
-          primitive: { topology: "line-list" },
+          vertex: {
+            module: nodeShaderModule,
+            entryPoint: "vs_main",
+            buffers: [
+              {
+                arrayStride: NODE_STRIDE_BYTES,
+                attributes: [
+                  { shaderLocation: 0, offset: 0, format: "float32x2" },
+                  { shaderLocation: 1, offset: 2 * BYTES_PER_FLOAT, format: "float32x2" },
+                  { shaderLocation: 2, offset: 4 * BYTES_PER_FLOAT, format: "float32x2" },
+                  { shaderLocation: 3, offset: 6 * BYTES_PER_FLOAT, format: "float32" },
+                  { shaderLocation: 4, offset: 7 * BYTES_PER_FLOAT, format: "float32" },
+                ],
+              },
+            ],
+          },
+          fragment: {
+            module: nodeShaderModule,
+            entryPoint: "fs_main",
+            targets: [{ format, writeMask: GPU_COLOR_WRITE_ALL, blend: blendState }],
+          },
+          primitive: { topology: "triangle-list", cullMode: "none" },
         });
 
         const uniformBuffer = device.createBuffer({
@@ -393,8 +616,8 @@ export const WebGpuGraphRenderer = ({ edges, nodes, viewport }: Props) => {
           bindGroup,
           context,
           device,
-          linePipeline,
-          trianglePipeline,
+          edgePipeline,
+          nodePipeline,
           uniformBuffer,
         };
 

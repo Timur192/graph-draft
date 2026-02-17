@@ -73,6 +73,17 @@
   gap: 14px;
 }
 
+.workspaceBody {
+  min-height: 0;
+  height: 100%;
+  display: flex;
+  gap: 10px;
+}
+
+.workspaceBody .board {
+  flex: 1 1 auto;
+}
+
 .toolbar {
   z-index: 5;
   display: flex;
@@ -301,6 +312,10 @@
 @media (max-width: 960px) {
   .workspace {
     gap: 10px;
+  }
+
+  .workspaceBody {
+    flex-direction: column;
   }
 
   .toolbar {

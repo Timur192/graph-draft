@@ -2,6 +2,8 @@ import { useGraphController } from "./hooks/useGraphController";
 import { LocateFixed, Minus, Plus } from "lucide-react";
 import { DomGraphRenderer } from "./renderers/DomGraphRenderer";
 import { WebGpuGraphRenderer } from "./renderers/WebGpuGraphRenderer";
+import { Chat } from "./components/Chat";
+import { useLLMChatController } from "./hooks/useLLMChatController";
 import styles from "./App.module.css";
 
 function App() {
@@ -19,6 +21,7 @@ function App() {
     zoomIn,
     zoomOut,
   } = useGraphController();
+  const { messages, loading, onMessageSend } = useLLMChatController();
 
   return (
     <main className={styles.app}>
@@ -52,55 +55,64 @@ function App() {
           </div>
         </header>
 
-        <section ref={boardRef} className={styles.board}>
-          <nav className={styles.quickMenu} data-role="toolbar">
-            <button type="button" className={styles.menuItemActive}>
-              Workspace
-            </button>
-            <button type="button" className={styles.menuItem}>
-              Analytics
-            </button>
-            <button type="button" className={styles.menuItem}>
-              Layers
-            </button>
-          </nav>
+        <div className={styles.workspaceBody}>
+          <section ref={boardRef} className={styles.board}>
+            <nav className={styles.quickMenu} data-role="toolbar">
+              <button type="button" className={styles.menuItemActive}>
+                Workspace
+              </button>
+              <button type="button" className={styles.menuItem}>
+                Analytics
+              </button>
+              <button type="button" className={styles.menuItem}>
+                Layers
+              </button>
+            </nav>
 
-          <div className={styles.boardControls} data-role="toolbar">
-            <button
-              type="button"
-              className={styles.controlButton}
-              onClick={zoomOut}
-              title="Zoom out"
-              aria-label="Zoom out"
-            >
-              <Minus className={styles.controlIcon} />
-            </button>
-            <button type="button" className={styles.controlButton} onClick={zoomIn} title="Zoom in" aria-label="Zoom in">
-              <Plus className={styles.controlIcon} />
-            </button>
-            <button
-              type="button"
-              className={styles.controlButton}
-              onClick={centerGraph}
-              title="Center graph"
-              aria-label="Center graph"
-            >
-              <LocateFixed className={styles.controlIcon} />
-            </button>
-          </div>
+            <div className={styles.boardControls} data-role="toolbar">
+              <button
+                type="button"
+                className={styles.controlButton}
+                onClick={zoomOut}
+                title="Zoom out"
+                aria-label="Zoom out"
+              >
+                <Minus className={styles.controlIcon} />
+              </button>
+              <button
+                type="button"
+                className={styles.controlButton}
+                onClick={zoomIn}
+                title="Zoom in"
+                aria-label="Zoom in"
+              >
+                <Plus className={styles.controlIcon} />
+              </button>
+              <button
+                type="button"
+                className={styles.controlButton}
+                onClick={centerGraph}
+                title="Center graph"
+                aria-label="Center graph"
+              >
+                <LocateFixed className={styles.controlIcon} />
+              </button>
+            </div>
 
-          {renderMode === "dom" ? (
-            <DomGraphRenderer
-              edges={edges}
-              nodeById={nodeById}
-              nodes={nodes}
-              onNodeDragStart={onNodeDragStart}
-              viewport={viewport}
-            />
-          ) : (
-            <WebGpuGraphRenderer edges={edges} nodes={nodes} viewport={viewport} />
-          )}
-        </section>
+            {renderMode === "dom" ? (
+              <DomGraphRenderer
+                edges={edges}
+                nodeById={nodeById}
+                nodes={nodes}
+                onNodeDragStart={onNodeDragStart}
+                viewport={viewport}
+              />
+            ) : (
+              <WebGpuGraphRenderer edges={edges} nodes={nodes} viewport={viewport} />
+            )}
+          </section>
+          <Chat messages={messages} loading={loading} onMessageSend={onMessageSend} />
+        </div>
       </div>
     </main>
   );

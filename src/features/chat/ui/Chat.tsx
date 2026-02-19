@@ -1,12 +1,11 @@
 import { useState, type KeyboardEvent } from "react";
-import type { ChatCompletionMessageParam } from "@mlc-ai/web-llm";
-import type { ChatEngineStatus } from "../model/types";
+import type { ChatDisplayMessage, ChatEngineStatus } from "../model/types";
 import styles from "./Chat.module.css";
 
 type Props = {
   engineStatus: ChatEngineStatus;
   errorMessage: string | null;
-  messages: ChatCompletionMessageParam[];
+  messages: ChatDisplayMessage[];
   loading: boolean;
   onMessageSend: (rawInput: string) => void;
 };
@@ -32,18 +31,16 @@ export const Chat = ({ engineStatus, errorMessage, messages, loading, onMessageS
 
       <div className={styles.messageList}>
         {errorMessage ? <div className={styles.assistantMessage}>{errorMessage}</div> : null}
-        {messages
-          .filter((msg) => msg.role === "assistant" || msg.role === "user")
-          .map((msg, index) => {
-            const rowClass = msg.role === "user" ? styles.userRow : styles.assistantRow;
-            const messageClass = msg.role === "user" ? styles.userMessage : styles.assistantMessage;
+        {messages.map((msg, index) => {
+          const rowClass = msg.role === "user" ? styles.userRow : styles.assistantRow;
+          const messageClass = msg.role === "user" ? styles.userMessage : styles.assistantMessage;
 
-            return (
-              <div key={index} className={rowClass}>
-                <div className={messageClass}>{`${msg.content}`}</div>
-              </div>
-            );
-          })}
+          return (
+            <div key={index} className={rowClass}>
+              <div className={messageClass}>{msg.content}</div>
+            </div>
+          );
+        })}
       </div>
 
       <div className={styles.inputArea}>

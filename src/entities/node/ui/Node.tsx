@@ -31,7 +31,7 @@ export const Node = ({ id, position, width, height, onDragStart }: Props) => {
       }}
       onMouseDown={handleMouseDown}
     >
-      <span className={styles.label}>node-{id}</span>
+      <span className={styles.label}>{id}</span>
     </div>
   );
 };

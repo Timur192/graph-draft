@@ -1,7 +1,7 @@
 import { CreateWebWorkerMLCEngine } from "@mlc-ai/web-llm";
 import type { WebWorkerMLCEngine } from "@mlc-ai/web-llm";
 
-const DEFAULT_MODEL = "Llama-3.2-1B-Instruct-q4f32_1-MLC";
+const DEFAULT_MODEL = "Llama-3.2-3B-Instruct-q4f32_1-MLC";
 
 type EngineOptions = {
   model?: string;

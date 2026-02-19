@@ -10,6 +10,7 @@ function App() {
     boardRef,
     centerGraph,
     edges,
+    graphApi,
     nodeById,
     nodes,
     onNodeDragStart,
@@ -20,7 +21,7 @@ function App() {
     zoomIn,
     zoomOut,
   } = useGraphController();
-  const { engineStatus, errorMessage, messages, loading, onMessageSend } = useLLMChatController();
+  const { displayMessages, engineStatus, errorMessage, loading, onMessageSend } = useLLMChatController({ graphApi, nodes, edges });
 
   return (
     <main className={styles.app}>
@@ -113,7 +114,7 @@ function App() {
           <Chat
             engineStatus={engineStatus}
             errorMessage={errorMessage}
-            messages={messages}
+            messages={displayMessages}
             loading={loading}
             onMessageSend={onMessageSend}
           />

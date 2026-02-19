@@ -1,26 +1,5 @@
-import type { NodeType } from "../types/node";
-
-export type EdgeCurve = {
-  sx: number;
-  sy: number;
-  x1: number;
-  y1: number;
-  x2: number;
-  y2: number;
-  tx: number;
-  ty: number;
-};
-
-export type NodeBounds = {
-  centerX: number;
-  centerY: number;
-  height: number;
-  maxX: number;
-  maxY: number;
-  minX: number;
-  minY: number;
-  width: number;
-};
+import type { NodeType } from "../../node";
+import type { EdgeCurve, NodeBounds } from "../model/types";
 
 export const createNodeMap = (nodes: NodeType[]) => {
   const map = new Map<string, NodeType>();

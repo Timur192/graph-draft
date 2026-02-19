@@ -1,6 +1,6 @@
-import type { EdgeType } from "../types/edge";
-import type { NodeType } from "../types/node";
-import { getEdgeCurve } from "../graph/geometry";
+import { getEdgeCurve } from "../../graph";
+import type { NodeType } from "../../node";
+import type { EdgeType } from "../model/types";
 import styles from "./Edge.module.css";
 
 type Props = EdgeType & {

@@ -1,9 +1,7 @@
-import { Edge } from "../components/Edge";
-import { Node } from "../components/Node";
-import type { ViewportType } from "../types/common";
-import type { EdgeType } from "../types/edge";
-import type { NodeDragStartHandler, NodeType } from "../types/node";
-import styles from "../App.module.css";
+import { Edge, type EdgeType } from "../../../entities/edge";
+import { Node, type NodeDragStartHandler, type NodeType } from "../../../entities/node";
+import type { ViewportType } from "../../../entities/graph";
+import styles from "./DomGraphRenderer.module.css";
 
 type Props = {
   edges: EdgeType[];

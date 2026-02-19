@@ -1,14 +1,4 @@
-import type { ViewportType } from "../types/common";
-
-export type BoardPoint = {
-  x: number;
-  y: number;
-};
-
-export type WorldPoint = {
-  x: number;
-  y: number;
-};
+import type { BoardPoint, ViewportType, WorldPoint } from "../model/types";
 
 export const getBoardPointFromClient = (clientX: number, clientY: number, rect: DOMRect): BoardPoint => ({
   x: clientX - rect.left,

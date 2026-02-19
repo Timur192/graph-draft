@@ -1,4 +1,5 @@
-import type { NodeDragStartHandler, NodeType } from "../types/node";
+import type { MouseEvent } from "react";
+import type { NodeDragStartHandler, NodeType } from "../model/types";
 import styles from "./Node.module.css";
 
 type Props = NodeType & {
@@ -6,7 +7,7 @@ type Props = NodeType & {
 };
 
 export const Node = ({ id, position, width, height, onDragStart }: Props) => {
-  const handleMouseDown = (event: React.MouseEvent<HTMLDivElement, MouseEvent>) => {
+  const handleMouseDown = (event: MouseEvent<HTMLDivElement>) => {
     event.preventDefault();
 
     const rect = event.currentTarget.getBoundingClientRect();

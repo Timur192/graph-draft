@@ -3,19 +3,21 @@ import { boardPointToWorld, createNodeMap, getBoardPointFromClient, type RenderM
 import type { EdgeType } from "../../../entities/edge";
 import type { NodeType } from "../../../entities/node";
 import { INITIAL_EDGES, INITIAL_NODES, ZOOM_MAX, ZOOM_MIN, ZOOM_STEP } from "./constants";
+import { useGraphApi } from "./graph-api";
 import { useBoardInteractions } from "./useBoardInteractions";
 import { useDomNodeDrag } from "./useDomNodeDrag";
 import { useGraphCentering } from "./useGraphCentering";
 
 export const useGraphController = () => {
   const [nodes, setNodes] = useState<NodeType[]>(INITIAL_NODES);
-  const [edges] = useState<EdgeType[]>(INITIAL_EDGES);
+  const [edges, setEdges] = useState<EdgeType[]>(INITIAL_EDGES);
   const [viewport, setViewport] = useState<ViewportType>({ panX: 0, panY: 0, zoom: 1 });
   const [renderMode, setRenderMode] = useState<RenderMode>("dom");
 
   const boardRef = useRef<HTMLDivElement>(null);
   const viewportRef = useRef(viewport);
   const nodesRef = useRef(nodes);
+  const edgesRef = useRef(edges);
 
   const webGpuAvailable = typeof navigator !== "undefined" && "gpu" in navigator;
 
@@ -29,6 +31,10 @@ export const useGraphController = () => {
   useEffect(() => {
     nodesRef.current = nodes;
   }, [nodes]);
+
+  useEffect(() => {
+    edgesRef.current = edges;
+  }, [edges]);
 
   const getWorldFromClient = useCallback((clientX: number, clientY: number, currentViewport: ViewportType) => {
     const boardEl = boardRef.current;
@@ -106,10 +112,18 @@ export const useGraphController = () => {
     [webGpuAvailable],
   );
 
+  const graphApi = useGraphApi({
+    edgesRef,
+    nodesRef,
+    setEdges,
+    setNodes,
+  });
+
   return {
     boardRef,
     centerGraph,
     edges,
+    graphApi,
     nodeById,
     nodes,
     onNodeDragStart,

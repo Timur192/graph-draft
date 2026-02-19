@@ -1,3 +1,6 @@
+import type { EdgeType } from "../../edge";
+import type { NodeType } from "../../node";
+
 export type ViewportType = {
   panX: number;
   panY: number;
@@ -37,3 +40,20 @@ export type NodeBounds = {
   minY: number;
   width: number;
 };
+
+export type GraphState = {
+  edges: EdgeType[];
+  nodes: NodeType[];
+};
+
+export type CreateNodeInput = Omit<NodeType, "id"> & {
+  id?: string;
+};
+
+export type UpdateNodePatch = Partial<Omit<NodeType, "id">>;
+
+export type CreateEdgeInput = Omit<EdgeType, "id"> & {
+  id?: string;
+};
+
+export type UpdateEdgePatch = Partial<Omit<EdgeType, "id">>;

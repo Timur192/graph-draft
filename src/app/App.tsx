@@ -31,7 +31,7 @@ function App() {
       <div className={styles.workspace}>
         <header className={styles.toolbar} data-role="toolbar">
           <div>
-            <h1 className={styles.title}>Graph Draft</h1>
+            <h1 className={styles.title}>GraphBench</h1>
           </div>
           <div className={styles.toolbarControls}>
             <div className={styles.rendererToggle}>
